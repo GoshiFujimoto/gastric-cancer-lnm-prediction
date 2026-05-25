@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+title: gastric-cancer-lnm-prediction
+message: "If you use this code, please cite it as below."
+type: software
+authors:
+  - family-names: Fujimoto
+    given-names: Goshi
+  - family-names: Kusanagi
+    given-names: Hiroshi
+repository-code: https://github.com/GoshiFujimoto/gastric-cancer-lnm-prediction
+doi: 10.5281/zenodo.20376901
+version: v1.0.0
+date-released: "2025-05-25"
+license: MIT

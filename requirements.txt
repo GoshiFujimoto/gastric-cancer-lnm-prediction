@@ -1,0 +1,13 @@
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn>=1.6.1
+xgboost>=2.0
+lightgbm>=4.0
+catboost
+shap
+scipy
+statsmodels
+openpyxl
+pillow

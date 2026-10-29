@@ -4,15 +4,29 @@
 #
 # Reference:
 #   Fujimoto G, Kusanagi H. Machine learning-based prediction of lymph node
-#   metastases for individualized surgical decision-making in older patients
-#   with gastric cancer. Gastric Cancer. (under review)
+#   metastasis for individualized surgical decision-making in older patients
+#   with gastric cancer: a retrospective simulation study compliant with
+#   TRIPOD+AI. Ann Surg Oncol. (under revision)
 #
-# Requirements:
-#   pip install pandas numpy matplotlib seaborn scikit-learn \
-#               xgboost lightgbm catboost shap scipy statsmodels openpyxl pillow
+# Requirements (exact versions used for the published results):
+#   pip install -r requirements.txt
 #
 # Tested with:
-#   Python 3.13 | scikit-learn 1.6.1 | LightGBM 4.x | XGBoost 2.x
+#   Python 3.13 | scikit-learn 1.6.1 | XGBoost 2.1.4 | LightGBM 4.7.0 |
+#   CatBoost 1.2.10 | SHAP 0.54.1
+#   Results for XGBoost can differ slightly with other XGBoost versions.
+#
+# Version history:
+#   v1.1.0 (revision)
+#     - Reduced-surgery simulation and decision curve analysis are evaluated in
+#       the internal TEST set (not the full internal cohort including training
+#       data) and in the temporal validation cohort.
+#     - Calibration ratio reported as observed-to-expected (O/E).
+#     - Sensitivity analysis using preoperatively available variables only
+#       (set PREOP_ONLY = True).
+#     - Manuscript figures (Figs. 1-6, Supplementary Figs. S3-S4) generated
+#       directly from this script; SHAP computed for all six models.
+#   v1.0.0  initial release
 # =============================================================================
 
 import warnings
@@ -110,6 +124,14 @@ TARGET_COL    = "N+"
 # Clinically mandatory variables always included in multivariate analysis
 MANDATORY_VARS = ['size', 'por_sig_muc', 'CEA', 'CA19-9']
 
+# Sensitivity analysis: set True to exclude variables derived from pathological
+# examination (tumor size, depth of invasion, histological type) and use only
+# preoperatively available variables. Outputs are written to OUTPUT_DIR/preop_only.
+PREOP_ONLY = False
+if PREOP_ONLY:
+    OUTPUT_DIR = OUTPUT_DIR / "preop_only"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 plt.rcParams.update({
     'font.family'    : 'DejaVu Sans',
     'axes.titlesize' : 13,
@@ -189,6 +211,29 @@ SIZE_COLS     = ['size']
 
 ALL_FEATURES = (PATIENT_COLS + LOCATION_COLS + WALL_COLS +
                 TYPE_COLS + SIZE_COLS + DEPTH_COLS + HIST_COLS + LAB_COLS)
+
+if PREOP_ONLY:
+    ALL_FEATURES   = [c for c in ALL_FEATURES if c not in DEPTH_COLS + HIST_COLS + SIZE_COLS]
+    MANDATORY_VARS = ['CEA', 'CA19-9']
+    print("  PREOP_ONLY sensitivity analysis: pathology-derived variables excluded.")
+
+# Display labels for figures. Tumor location follows the Japanese Classification
+# of Gastric Carcinoma (E/D/J: esophageal/duodenal/jejunal invasion; A/S/O/T:
+# anastomotic site, suture line, other site, entire remnant stomach).
+LABELS = {
+    'age':'Age','sex':'Male sex','ASA-PS':'ASA-PS','BMI':'BMI','CCI':'CCI',
+    'E':'Esophageal inv. (E)','U':'Upper third (U)','M':'Middle third (M)','L':'Lower third (L)',
+    'D':'Duodenal inv. (D)','A':'Remnant: anastomosis (A)','S':'Remnant: suture line (S)',
+    'O':'Remnant: other site (O)','T':'Remnant: entire (T)','J':'Jejunal inv. (J)',
+    'Ant':'Ant. wall','Post':'Post. wall','Less':'Lesser curv.','Gre':'Greater curv.','Circ':'Circumferential',
+    'type0':'Macr. type 0','type1':'Macr. type 1','type2':'Macr. type 2','type3':'Macr. type 3','type4':'Macr. type 4',
+    'size':'Tumor size','M.1':'Mucosa (M)','SM':'Submucosa (SM)','MP':'Musc. propria (MP)',
+    'SS':'Subserosa (SS)','SE':'Serosa exp. (SE)','SI':'Serosa inv. (SI)',
+    'tub1-2':'tub1-2 (diff.)','por_sig_muc':'Undiff. type','NEC':'NEC','pap':'Papillary',
+    'Hb':'Hb','Alb':'Albumin','CRP':'CRP','T-Chol':'T-Chol','lympohcyte':'Lymphocyte',
+    'CRP/Alb_ratio':'CRP/Alb','Hb/Alb_ratio':'Hb/Alb','PNI':'PNI','CONUT':'CONUT','CEA':'CEA','CA19-9':'CA19-9',
+}
+lab = lambda c: LABELS.get(c, c)
 
 def preprocess(df):
     """Convert object columns to numeric and cast all feature columns to float64."""
@@ -297,7 +342,8 @@ for col in FEAT_COLS:
         OR=round(OR, 3)    if not np.isnan(OR)    else np.nan,
         CI_lo=round(ci_lo, 3) if not np.isnan(ci_lo) else np.nan,
         CI_hi=round(ci_hi, 3) if not np.isnan(ci_hi) else np.nan,
-        p_value=round(pval, 4) if not np.isnan(pval)  else np.nan
+        p_value=round(pval, 4) if not np.isnan(pval)  else np.nan,
+        p_raw=pval
     ))
 
 df_univar = pd.DataFrame(univar_rows).sort_values('p_value')
@@ -600,14 +646,14 @@ for thr in THRESHOLDS:
 
 # Enhanced calibration
 print("\nEnhanced calibration (TRIPOD+AI Item 22):")
-print(f"{'Dataset':<14} {'Brier':>10} {'95%CI':>22} {'E/O':>8} {'HL x2':>8} {'HL p':>10} {'Eval':>8}")
+print(f"{'Dataset':<14} {'Brier':>10} {'95%CI':>22} {'O/E':>8} {'HL x2':>8} {'HL p':>10} {'Eval':>8}")
 print("─" * 82)
 for ds_label, yt, yp in [
     ("Internal", y_test, prob_store['test'][best_name]),
     ("External", y_ext,  prob_store['ext'][best_name])
 ]:
     bs = brier_score_loss(yt, yp); bs_ci = bootstrap_ci(yt, yp, brier_score_loss)
-    eo = yt.mean() / yp.mean(); c2, ph = hl_test(yt, yp)
+    eo = yt.mean() / yp.mean(); c2, ph = hl_test(yt, yp)   # observed-to-expected (O/E) ratio
     eval_ = "Good" if 0.9 < eo < 1.1 else "Caution"
     print(f"  {ds_label:<14} {bs:>10.4f} ({bs_ci[0]:.4f}–{bs_ci[1]:.4f}) "
           f"{eo:>8.3f} {c2:>8.1f} {'<0.001' if ph<0.001 else f'{ph:.4f}':>10} {eval_:>8}")
@@ -622,7 +668,7 @@ print(f"  Riley method recommended N~700; actual N={len(y_int_all)}: sufficient.
 # Threshold rationale
 print("\nThreshold rationale (TRIPOD+AI Item 15):")
 print("  5%  : Most conservative; zero false-negative priority.")
-print("  10% : Recommended — NPV>=0.99 with meaningful eligibility expansion.")
+print("  10% : Primary threshold — balance between candidate rate and NPV.")
 print("  20% : Aggressive expansion; increased false-negatives expected.")
 print("  Basis: eCura system (Japanese Gastric Cancer Treatment Guidelines, LNM <5-10%).")
 
@@ -677,14 +723,14 @@ def compute_shap(model, name, X_bg, X_target):
             sv = explainer.shap_values(X_target)
             if isinstance(sv, list): sv = sv[1]
             if sv.ndim == 3: sv = sv[:, :, 1]
-        else:
-            bg = shap.sample(X_bg, 50, random_state=RANDOM_STATE)
-            explainer = shap.KernelExplainer(model.predict_proba, bg, link='logit')
-            Xsamp = shap.sample(X_target, 50, random_state=RANDOM_STATE)
-            sv = explainer.shap_values(Xsamp, nsamples=100)
-            if isinstance(sv, list): sv = sv[1]
-            if sv.ndim == 3: sv = sv[:, :, 1]
-            X_target = Xsamp
+        elif name == 'LR':
+            explainer = shap.LinearExplainer(model, X_bg)
+            sv = explainer.shap_values(X_target)
+        else:   # MLP: model-agnostic KernelExplainer on the predicted probability
+            bg = shap.kmeans(X_bg, 30)
+            f  = lambda X: model.predict_proba(X)[:, 1]
+            explainer = shap.KernelExplainer(f, bg)
+            sv = explainer.shap_values(np.asarray(X_target), nsamples=300, silent=True)
         return explainer, sv, X_target
     except Exception as e:
         print(f"  SHAP error ({name}): {e}"); return None, None, None
@@ -717,12 +763,15 @@ def run_simulation(y_true, y_prob, thresholds, label):
                          local_rate_pct=round(lr*100, 1),
                          NPV=round(npv, 4) if not np.isnan(npv) else np.nan,
                          false_negative=fn, avoided_overop=int((1-y_true)[~low].sum())))
+        npv_txt = f"{npv:.4f}" if not np.isnan(npv) else "N/A"
         print(f"  Threshold {thr*100:.0f}%: candidates={n_low} ({lr*100:.1f}%), "
-              f"NPV={npv:.4f if not np.isnan(npv) else 'N/A'}, FN={fn}")
+              f"NPV={npv_txt}, FN={fn}")
     return pd.DataFrame(rows)
 
-df_sim_int = run_simulation(y_int_all, prob_int_all, THRESHOLDS, "Internal (all)")
-df_sim_ext = run_simulation(y_ext,     prob_ext_all, THRESHOLDS, "External validation")
+# Evaluated in data not used for model training: internal test set and temporal cohort
+prob_test_best = prob_store['test'][best_name]
+df_sim_int = run_simulation(y_test, prob_test_best, THRESHOLDS, "Internal test set")
+df_sim_ext = run_simulation(y_ext,  prob_ext_all,   THRESHOLDS, "Temporal validation")
 
 # =============================================================================
 # 12. Decision Curve Analysis
@@ -746,8 +795,8 @@ def run_dca(y, prob, label):
               f"treat-all={y.mean()-(1-y.mean())*thr/(1-thr):.4f}")
     return nb_model, nb_all, nb_none
 
-nb_int_m, nb_int_a, nb_int_n = run_dca(y_int_all, prob_int_all, "Internal")
-nb_ext_m, nb_ext_a, nb_ext_n = run_dca(y_ext,     prob_ext_all, "External")
+nb_int_m, nb_int_a, nb_int_n = run_dca(y_test, prob_test_best, "Internal test set")
+nb_ext_m, nb_ext_a, nb_ext_n = run_dca(y_ext,  prob_ext_all,   "Temporal validation")
 
 # =============================================================================
 # 13. Figure generation
@@ -769,67 +818,102 @@ for ax, (df, title) in zip(axes, [
 fig.suptitle('pN+ distribution', fontsize=14, fontweight='bold')
 fig.tight_layout(); save_fig(fig, "Fig01_Nplus_distribution")
 
-# Fig02: Univariable forest plot (top 20)
-df_uv_p = df_univar.dropna(subset=['OR','CI_lo','CI_hi']).sort_values('p_value').head(20)
-fig, ax  = plt.subplots(figsize=(8, 8))
-for i, (_, r) in enumerate(df_uv_p.iterrows()):
-    c = '#C44E52' if r['p_value'] < 0.05 else '#A0A0A0'
-    ax.errorbar(r['OR'], i, xerr=[[r['OR']-r['CI_lo']], [r['CI_hi']-r['OR']]],
-                fmt='o', color=c, capsize=4, markersize=5)
-ax.axvline(1, color='k', ls='--', lw=0.8)
-ax.set_yticks(range(len(df_uv_p))); ax.set_yticklabels(df_uv_p['variable'].tolist(), fontsize=8)
-ax.set_xlabel('Odds Ratio (95% CI)'); ax.set_title('Univariable Forest Plot (top 20)')
-ax.legend(handles=[mpatches.Patch(color='#C44E52', label='p<0.05'),
-                    mpatches.Patch(color='#A0A0A0', label='p>=0.05')])
-fig.tight_layout(); save_fig(fig, "Fig02_univariate_forest_plot")
+# ---------------------------------------------------------------------------
+# Manuscript Fig. 1: univariable analysis (-log10 p, all candidate variables)
+# ---------------------------------------------------------------------------
+_uv = df_univar.dropna(subset=['p_raw']).sort_values('p_raw')
+_uv = _uv.assign(l=-np.log10(_uv['p_raw'].clip(lower=1e-300)))[::-1]
+fig, ax = plt.subplots(figsize=(9, max(6, 0.27*len(_uv))))
+ax.barh([lab(c) for c in _uv['variable']], _uv['l'], height=0.7,
+        color=['#CC6666' if p < 0.05 else '#AAAAAA' for p in _uv['p_raw']])
+ax.axvline(-np.log10(0.05), color='k', ls='--', lw=1, label='p = 0.05')
+for i, (l, p) in enumerate(zip(_uv['l'], _uv['p_raw'])):
+    ax.text(l + 0.8, i, 'p < 0.001' if p < 0.001 else f'p = {p:.3f}', va='center', fontsize=8)
+ax.set_xlim(0, _uv['l'].max()*1.12); ax.set_ylim(-0.7, len(_uv)-0.3)
+ax.set_xlabel('-log10(p-value)', fontsize=12); ax.legend(loc='lower right')
+fig.tight_layout(); save_fig(fig, "ManuscriptFig1_univariable")
 
-# Fig03: Multivariable forest plot
+# ---------------------------------------------------------------------------
+# Manuscript Fig. 2: multivariable logistic regression (standardized variables;
+# ORs per 1-SD increase). Variables with quasi-complete separation (depth of
+# invasion) are not displayed.
+# ---------------------------------------------------------------------------
 if mv_table is not None:
-    mv_p = mv_table[mv_table['variable'] != 'const'].dropna(subset=['OR','CI_lo','CI_hi'])
-    fig, ax = plt.subplots(figsize=(8, max(4, len(mv_p)*0.45)))
-    for i, (_, r) in enumerate(mv_p.iterrows()):
-        pval = r['p_value'] if not np.isnan(r['p_value']) else 1.0
-        c = '#C44E52' if pval < 0.05 else '#A0A0A0'
-        ax.errorbar(r['OR'], i,
-                    xerr=[[max(r['OR']-r['CI_lo'],0)], [max(r['CI_hi']-r['OR'],0)]],
-                    fmt='s', color=c, capsize=4, markersize=6)
-    ax.axvline(1, color='k', ls='--', lw=0.8)
-    ax.set_yticks(range(len(mv_p))); ax.set_yticklabels(mv_p['variable'].tolist(), fontsize=9)
-    ax.set_xlabel('Odds Ratio (95% CI)'); ax.set_title('Multivariable Logistic Regression Forest Plot')
-    ax.legend(handles=[mpatches.Patch(color='#C44E52', label='p<0.05'),
-                        mpatches.Patch(color='#A0A0A0', label='p>=0.05')])
-    fig.tight_layout(); save_fig(fig, "Fig03_multivariate_forest_plot")
+    _mv = mv_table[mv_table['variable'] != 'const'].copy()
+    _mv = _mv[~_mv['variable'].isin(DEPTH_COLS)].dropna(subset=['OR','CI_lo','CI_hi']).sort_values('OR')
+    fig, ax = plt.subplots(figsize=(11, max(4, 0.4*len(_mv)+1)))
+    for i, (_, r) in enumerate(_mv.iterrows()):
+        ax.plot([r['CI_lo'], r['CI_hi']], [i, i], color='#1B3A6B', lw=1.5)
+        ax.plot(r['OR'], i, 's', color='#1B3A6B', ms=6)
+        ptxt = 'p < 0.001' if r['p_value'] < 0.001 else f"p = {r['p_value']:.3f}"
+        ax.text(1.02, i, f"{r['OR']:.3f} ({r['CI_lo']:.3f}–{r['CI_hi']:.3f})   {ptxt}",
+                transform=ax.get_yaxis_transform(), va='center', fontsize=9)
+    ax.text(1.02, len(_mv)-0.2, 'OR (95% CI)', transform=ax.get_yaxis_transform(), fontsize=10)
+    ax.set_yticks(range(len(_mv))); ax.set_yticklabels([lab(v) for v in _mv['variable']], fontsize=9.5)
+    ax.axvline(1, color='k', ls='--', lw=0.8); ax.set_xscale('log')
+    _tk = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]
+    ax.set_xticks(_tk); ax.set_xticklabels([str(v) for v in _tk]); ax.set_xlim(0.08, 60)
+    ax.set_xlabel('Odds ratio per 1-SD increase (95% CI), log scale', fontsize=12)
+    plt.subplots_adjust(left=0.27, right=0.68, top=0.97, bottom=0.07)
+    save_fig(fig, "ManuscriptFig2_multivariable")
 
-# Fig04: Feature selection
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-lasso_nz = lasso_coef[lasso_coef != 0].sort_values(key=abs, ascending=True)
-axes[0].barh(lasso_nz.index, lasso_nz.values,
-             color=['#C44E52' if v > 0 else '#4C72B0' for v in lasso_nz.values])
-axes[0].axvline(0, color='k', lw=0.8)
-axes[0].set_title('LASSO coefficients'); axes[0].set_xlabel('Coefficient')
-rf_top20 = rf_imp.head(20).sort_values()
-axes[1].barh(rf_top20.index, rf_top20.values, color='#55A868')
-axes[1].set_title('RF feature importance (top 20)'); axes[1].set_xlabel('Importance')
-fig.tight_layout(); save_fig(fig, "Fig04_feature_selection")
+# ---------------------------------------------------------------------------
+# Supplementary Fig. S3: feature selection (training set only)
+# ---------------------------------------------------------------------------
+_nz = lasso_coef[lasso_coef != 0].sort_values()
+_thr = rf_imp.mean(); _top = rf_imp.sort_values(ascending=False).head(25)[::-1]
+fig, axes = plt.subplots(1, 2, figsize=(15, 10.5))
+axes[0].barh([lab(k) for k in _nz.index], _nz.values,
+             color=['#CC6666' if v > 0 else '#74A9D8' for v in _nz.values])
+axes[0].axvline(0, color='k', lw=0.8); axes[0].set_xlabel('LASSO coefficient (standardized)', fontsize=12)
+axes[0].set_title(f'(A) LASSO feature selection\n({len(_nz)} non-zero variables; C = 0.1, fixed a priori)', fontsize=13, fontweight='bold')
+axes[1].barh([lab(k) for k in _top.index], _top.values,
+             color=['#F0914F' if v >= _thr else '#C9C9C9' for v in _top.values])
+axes[1].axvline(_thr, color='k', ls='--', lw=1)
+axes[1].text(_thr + 0.002, 0.2, f'mean importance\n= {_thr:.4f}', fontsize=9.5, va='bottom')
+axes[1].set_xlabel('Random forest impurity-based importance', fontsize=12)
+axes[1].set_title(f'(B) Random forest importance\n(top 25 shown; {int((rf_imp >= _thr).sum())} variables ≥ mean selected, orange)', fontsize=13, fontweight='bold')
+fig.suptitle(f'Feature selection in the training set (N = {len(y_train)}); final predictors (n = {len(selected_features)}) = '
+             f'union of (A) and (B) + forced variables', fontsize=13, fontweight='bold')
+plt.tight_layout(rect=(0, 0, 1, 0.95)); save_fig(fig, "SupplFigS3_feature_selection")
 
-# Fig05: ROC curves
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-for ax, (ds, y_true, label) in zip(axes, [
-    ('test', y_test, "Internal test set"), ('ext', y_ext, "External validation")
-]):
-    for name, yp in prob_store[ds].items():
-        fpr, tpr, _ = roc_curve(y_true, yp)
-        ax.plot(fpr, tpr, label=f"{name} (AUC={roc_auc_score(y_true,yp):.3f})",
-                color=PALETTE.get(name,'#999'))
-    ax.plot([0,1],[0,1],'k--',lw=0.8)
-    ax.set_xlabel('FPR'); ax.set_ylabel('TPR'); ax.set_title(f'ROC Curve: {label}')
-    ax.legend(loc='lower right', fontsize=8)
-fig.tight_layout(); save_fig(fig, "Fig05_ROC_curves")
+# ---------------------------------------------------------------------------
+# Manuscript Fig. 3: ROC curves (all models) and calibration (best model)
+# ---------------------------------------------------------------------------
+_STY = {'LR': ':', 'RF': '--', 'XGB': '-.', 'LGBM': '-', 'CatBoost': (0, (3, 1, 1, 1)), 'MLP': (0, (4, 2))}
+_NM  = {'LR': 'LR', 'RF': 'RF', 'XGB': 'XGBoost', 'LGBM': 'LightGBM', 'CatBoost': 'CatBoost', 'MLP': 'MLP'}
+fig, axes = plt.subplots(1, 4, figsize=(22, 5.6), gridspec_kw=dict(wspace=0.28))
+_sets = [('test', y_test, f'Internal Test Set (N = {len(y_test)})'),
+         ('ext',  y_ext,  f'Temporal Validation (N = {len(y_ext)})')]
+for k, (ds, yt, title) in enumerate(_sets):
+    ax = axes[k]
+    for name in [n for n in ['LR', 'RF', 'XGB', 'CatBoost', 'MLP', 'LGBM'] if n in prob_store[ds]]:
+        yp = prob_store[ds][name]; fpr, tpr, _ = roc_curve(yt, yp)
+        best = (name == best_name)
+        ax.plot(fpr, tpr, ls=_STY[name], color=PALETTE[name], lw=3 if best else 1.6,
+                label=f'{_NM[name]} (AUC={roc_auc_score(yt, yp):.3f})', zorder=5 if best else 3)
+    ax.plot([0, 1], [0, 1], 'k--', lw=0.8)
+    ax.set_xlabel('1 - Specificity (FPR)'); ax.set_ylabel('Sensitivity (TPR)')
+    ax.set_title(f'ROC curve: {title}', fontsize=12); ax.legend(loc='lower right', fontsize=9)
+for k, (ds, yt, title) in enumerate(_sets):
+    ax = axes[2 + k]; yp = prob_store[ds][best_name]
+    frac, mp = calibration_curve(yt, yp, n_bins=8)
+    ax.plot(mp, frac, 's-', color=PALETTE[best_name], lw=2, ms=7, label=_NM[best_name])
+    ax.plot([0, 1], [0, 1], 'k--', label='Perfect calibration')
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1.05)
+    ax.set_xlabel('Mean predicted probability'); ax.set_ylabel('Fraction of positives')
+    ax.set_title(f'Calibration: {title}', fontsize=12); ax.legend(loc='lower right', fontsize=9)
+    ax.text(0.04, 0.97, f'Brier = {brier_score_loss(yt, yp):.3f}\nO/E = {yt.mean()/yp.mean():.3f}\n'
+            f'HL p = {hl_test(yt, yp)[1]:.3f}', transform=ax.transAxes, va='top', fontsize=10,
+            bbox=dict(boxstyle='round', fc='#FFFDE7', ec='#333333'))
+fig.text(0.115, 0.97, '(A)  ROC curves', fontsize=14, fontweight='bold')
+fig.text(0.52, 0.97, f'(B)  Calibration plots ({_NM[best_name]})', fontsize=14, fontweight='bold')
+save_fig(fig, "ManuscriptFig3_ROC_calibration")
 
 # Fig06: PR curves
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 for ax, (ds, y_true, label) in zip(axes, [
-    ('test', y_test, "Internal test set"), ('ext', y_ext, "External validation")
+    ('test', y_test, "Internal test set"), ('ext', y_ext, "Temporal validation")
 ]):
     for name, yp in prob_store[ds].items():
         p_arr, r_arr, _ = precision_recall_curve(y_true, yp)
@@ -842,101 +926,119 @@ fig.tight_layout(); save_fig(fig, "Fig06_PR_curves")
 # Fig07: Model comparison heatmap
 metrics_list = ['Accuracy','Precision','Recall','F1','ROC_AUC','PR_AUC']
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-for ax, ds, label in zip(axes, ['test','ext'], ["Internal test set","External validation"]):
+for ax, ds, label in zip(axes, ['test','ext'], ["Internal test set","Temporal validation"]):
     sub = df_eval[df_eval['Dataset']==ds].set_index('Model')[metrics_list].astype(float)
     sns.heatmap(sub, annot=True, fmt='.3f', cmap='Blues', vmin=0.4, vmax=1.0,
                 ax=ax, linewidths=0.5)
     ax.set_title(f'Model performance: {label}')
 fig.tight_layout(); save_fig(fig, "Fig07_model_comparison_heatmap")
 
-# Fig08: Calibration plots
-fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-for ax, (ds, y_true, label) in zip(axes, [
-    ('test', y_test, "Internal test set"), ('ext', y_ext, "External validation")
-]):
-    yp = prob_store[ds][best_name]
-    frac, mp = calibration_curve(y_true, yp, n_bins=8)
-    ax.plot(mp, frac, 's-', label=best_name, color=PALETTE.get(best_name,'#333'))
-    ax.plot([0,1],[0,1],'k--', label='Perfect calibration')
-    ax.set_xlabel('Mean Predicted Probability'); ax.set_ylabel('Fraction of Positives')
-    ax.set_title(f'Calibration Plot: {label}'); ax.legend()
-fig.tight_layout(); save_fig(fig, "Fig08_calibration_plot")
-
-# Fig09: SHAP (best model)
+# ---------------------------------------------------------------------------
+# Manuscript Fig. 4: SHAP for the best model (internal test set)
+# ---------------------------------------------------------------------------
 if best_name in shap_store:
-    sv = shap_store[best_name]['sv']; Xsh = shap_store[best_name]['X']
-    fig = plt.figure(figsize=(8, 6))
-    shap.summary_plot(sv, Xsh, plot_type='bar', show=False, feature_names=selected_features)
-    plt.title(f'SHAP Feature Importance: {best_name}')
-    plt.tight_layout(); save_fig(fig, f"Fig09a_SHAP_bar_{best_name}")
-
-    fig = plt.figure(figsize=(8, 7))
-    shap.summary_plot(sv, Xsh, show=False, feature_names=selected_features)
-    plt.title(f'SHAP Beeswarm: {best_name}')
-    plt.tight_layout(); save_fig(fig, f"Fig09b_SHAP_beeswarm_{best_name}")
-
-# Fig09c: SHAP all models (combined)
-if shap_store:
-    _paths = []
-    for name, sr in shap_store.items():
-        _fig = plt.figure(figsize=(5, 5))
-        shap.summary_plot(sr['sv'], sr['X'], plot_type='bar', show=False, feature_names=selected_features)
-        _cur = plt.gcf(); _cur.axes[0].set_title(name, fontsize=11); _cur.tight_layout()
-        _tmp = OUTPUT_DIR / f"_tmp_shap_{name}.png"
-        _cur.savefig(_tmp, bbox_inches='tight', dpi=150); plt.close(_cur)
-        _paths.append((_tmp, name))
+    sv = np.asarray(shap_store[best_name]['sv']); Xsh = shap_store[best_name]['X']
+    _names = [lab(c) for c in selected_features]
+    shap.summary_plot(sv, Xsh, feature_names=_names, plot_type='bar', max_display=20,
+                      show=False, plot_size=(8, 9.5), color='#1E88E5')
+    plt.title(f'(A) Mean |SHAP| ({_NM[best_name]})', fontsize=13, fontweight='bold', loc='left')
+    plt.tight_layout(); _fa = OUTPUT_DIR / '_f4a.png'; plt.savefig(_fa, dpi=300); plt.close()
+    shap.summary_plot(sv, Xsh, feature_names=_names, max_display=20, show=False, plot_size=(8.5, 9.5))
+    plt.title(f'(B) SHAP beeswarm plot ({_NM[best_name]})', fontsize=13, fontweight='bold', loc='left')
+    plt.tight_layout(); _fb = OUTPUT_DIR / '_f4b.png'; plt.savefig(_fb, dpi=300); plt.close()
     try:
         from PIL import Image as _PIL
-        _imgs = [_PIL.open(str(p)) for p, _ in _paths]
-        _w = sum(im.width for im in _imgs); _h = max(im.height for im in _imgs)
-        _canvas = _PIL.new('RGB', (_w, _h), (255, 255, 255))
-        _x = 0
-        for _im in _imgs:
-            _canvas.paste(_im, (_x, 0)); _x += _im.width
-        _out = OUTPUT_DIR / "Fig09c_SHAP_all_models.png"
-        _canvas.save(str(_out), dpi=(150, 150)); print(f"  [saved] {_out}")
-    except Exception as _e:
-        print(f"  [PIL merge skipped: {_e}]")
-    for _p, _ in _paths:
-        try: _p.unlink()
-        except Exception: pass
+        _a, _b = _PIL.open(_fa), _PIL.open(_fb)
+        _c = _PIL.new('RGB', (_a.width + _b.width, max(_a.height, _b.height)), 'white')
+        _c.paste(_a, (0, 0)); _c.paste(_b, (_a.width, 0))
+        _c.save(OUTPUT_DIR / 'ManuscriptFig4_SHAP.png', dpi=(300, 300))
+        print(f"  [saved] {OUTPUT_DIR / 'ManuscriptFig4_SHAP.png'}")
+    finally:
+        for _p in (_fa, _fb):
+            try: _p.unlink()
+            except Exception: pass
 
-# Fig10: Simulation results
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-for ax, (df_sim, title) in zip(axes, [
-    (df_sim_int, "Internal (all)"), (df_sim_ext, "External validation")
-]):
-    x_labels = [f"{int(t*100)}%" for t in df_sim['threshold']]
-    ax2 = ax.twinx(); bw = 0.35; xs = np.arange(len(x_labels))
-    ax.bar(xs-bw/2, df_sim['local_rate_pct'], width=bw, color='#5B9BD5', alpha=0.8, label='Candidate rate (%)')
-    ax.bar(xs+bw/2, df_sim['false_negative'],  width=bw, color='#C44E52', alpha=0.8, label='False negatives')
-    ax2.plot(xs, df_sim['NPV'], 'ko-', lw=2, ms=8, label='NPV')
-    ax.set_xticks(xs); ax.set_xticklabels(x_labels)
-    ax.set_ylabel('Cases / Rate (%)'); ax2.set_ylabel('NPV'); ax2.set_ylim(0.5, 1.05)
-    ax.set_title(f'Simulation: {title}')
-    l1, lb1 = ax.get_legend_handles_labels(); l2, lb2 = ax2.get_legend_handles_labels()
-    ax.legend(l1+l2, lb1+lb2, loc='upper left', fontsize=8)
-fig.tight_layout(); save_fig(fig, "Fig10_simulation_results")
+# ---------------------------------------------------------------------------
+# Supplementary Fig. S4: SHAP importance across all six models
+# ---------------------------------------------------------------------------
+if shap_store:
+    _KEY = {'type0', 'M.1', 'SM', 'SE', 'SS', 'SI', 'MP', 'size'}
+    fig, axs = plt.subplots(2, 3, figsize=(17, 11))
+    for ax, name in zip(axs.flat, ['LR', 'RF', 'XGB', 'LGBM', 'CatBoost', 'MLP']):
+        if name not in shap_store: ax.axis('off'); continue
+        imp = pd.Series(np.abs(np.asarray(shap_store[name]['sv'])).mean(axis=0), index=selected_features)
+        s = (imp / imp.max()).sort_values(ascending=False).head(15)[::-1]
+        ax.barh([lab(c) for c in s.index], s.values,
+                color=['#C44E52' if c == 'type0' else ('#E8A33D' if c in _KEY else '#9DB4D3') for c in s.index])
+        rank_txt = ''
+        if 'type0' in imp.index:
+            rank_txt = f"  (Macr. type 0: rank {list(imp.sort_values(ascending=False).index).index('type0') + 1})"
+        ax.set_title(f'{_NM[name]}{rank_txt}', fontsize=12, fontweight='bold')
+        ax.set_xlim(0, 1.05); ax.tick_params(axis='y', labelsize=9.5)
+        ax.set_xlabel('Normalized mean |SHAP| (max = 1)', fontsize=10)
+    fig.suptitle(f'SHAP feature importance across all six models (internal test set, N = {len(y_test)})\n'
+                 'Top 15 features per model; red, macroscopic type 0; orange, depth of invasion and tumor size',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=(0, 0, 1, 0.94)); save_fig(fig, "SupplFigS4_SHAP_all_models")
 
-# Fig11: DCA
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-for ax, (nb_m, nb_a, nb_n, label) in zip(axes, [
-    (nb_int_m, nb_int_a, nb_int_n, "Internal (all)"),
-    (nb_ext_m, nb_ext_a, nb_ext_n, "External validation")
-]):
-    ax.plot(thr_range, nb_m, 'b-', lw=2, label=f'Model ({best_name})')
-    ax.plot(thr_range, nb_a, 'r--', lw=1.5, label='Treat all')
-    ax.plot(thr_range, nb_n, 'k-', lw=1.0, label='Treat none')
-    for thr in THRESHOLDS: ax.axvline(thr, color='gray', ls=':', lw=0.8)
-    ax.set_xlim(0, 0.5); ax.set_ylim(-0.05, max(nb_a)*1.3)
-    ax.set_xlabel('Threshold probability'); ax.set_ylabel('Net Benefit')
-    ax.set_title(f'Decision Curve Analysis: {label}'); ax.legend()
-fig.tight_layout(); save_fig(fig, "Fig11_DCA")
+# ---------------------------------------------------------------------------
+# Manuscript Fig. 5: reduced-surgery simulation (internal test set / temporal)
+# ---------------------------------------------------------------------------
+def _npv_ci(yt, yp, t, B=B_BOOTSTRAP):
+    f = lambda a, b: float((1 - a[b < t]).mean()) if (b < t).sum() > 0 else np.nan
+    return bootstrap_ci(yt, yp, f, B=B)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5.6))
+for ax, (yt, yp, title) in zip(axes, [(y_test, prob_test_best, f'Internal Test Set\n(N={len(y_test)})'),
+                                      (y_ext,  prob_ext_all,   f'Temporal Validation\n(N={len(y_ext)})')]):
+    xs = np.arange(len(THRESHOLDS)); rates, fns, npvs, los, his = [], [], [], [], []
+    for t in THRESHOLDS:
+        low = yp < t; n = int(low.sum()); rates.append(100*n/len(yt)); fns.append(int(yt[low].sum()))
+        if n:
+            v = float((1 - yt[low]).mean()); ci = _npv_ci(yt, yp, t)
+            npvs.append(v); los.append(v - ci[0]); his.append(ci[1] - v)
+        else:
+            npvs.append(np.nan); los.append(0); his.append(0)
+    ax.bar(xs - 0.18, rates, 0.36, color='#74A9D8', label='Candidate rate (%)')
+    ax.bar(xs + 0.18, fns, 0.36, color='#CC6666', label='False negatives (n)')
+    for i in range(len(xs)):
+        ax.text(xs[i] - 0.18, rates[i] + 0.6, f'{rates[i]:.1f}%', ha='center', fontweight='bold')
+        if fns[i] > 0: ax.text(xs[i] + 0.18, fns[i] + 0.6, str(fns[i]), ha='center', fontweight='bold')
+    ax.set_xticks(xs); ax.set_xticklabels([f'{int(t*100)}%' + ('\n(recommended)' if t == 0.10 else '') for t in THRESHOLDS])
+    ax.set_xlabel('Threshold probability', fontsize=12); ax.set_ylabel('Candidate rate (%) / False negatives (n)')
+    ax.set_ylim(0, max(rates)*1.7 + 2); ax.set_title(title, fontweight='bold', fontsize=13)
+    ax2 = ax.twinx(); idx = [i for i in range(len(xs)) if not np.isnan(npvs[i])]
+    if idx:
+        ax2.errorbar([xs[i] for i in idx], [npvs[i] for i in idx],
+                     yerr=[[los[i] for i in idx], [his[i] for i in idx]],
+                     fmt='-o', color='k', lw=2, ms=9, capsize=5, label='NPV')
+        for i in idx: ax2.text(xs[i] + 0.05, npvs[i] - 0.035, f'{npvs[i]:.3f}', ha='left', fontsize=10)
+    ax2.set_ylim(0.5, 1.05); ax2.set_ylabel('NPV (95% CI by bootstrap)')
+    h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, loc='upper left')
+fig.tight_layout(); save_fig(fig, "ManuscriptFig5_simulation")
+
+# ---------------------------------------------------------------------------
+# Manuscript Fig. 6: decision curve analysis (internal test set / temporal)
+# ---------------------------------------------------------------------------
+_ts = np.linspace(0.01, 0.60, 60)
+fig, axes = plt.subplots(1, 2, figsize=(14, 5.6))
+for ax, (yt, yp, title) in zip(axes, [(y_test, prob_test_best, f'DCA: Internal Test Set (N={len(y_test)})'),
+                                      (y_ext,  prob_ext_all,   f'DCA: Temporal Validation (N={len(y_ext)})')]):
+    ax.plot(_ts*100, [net_benefit(yt, yp, t) for t in _ts], color='blue', lw=2.5, label=_NM[best_name])
+    ax.plot(_ts*100, [yt.mean() - (1 - yt.mean())*t/(1 - t) for t in _ts], 'r--', lw=2, label='Treat all')
+    ax.axhline(0, color='k', ls=':', lw=1, label='Treat none')
+    for tv, c in [(10, 'green'), (20, 'orange')]:
+        ax.axvline(tv, color=c, ls=':', lw=1.5); ax.text(tv + 0.5, 0.01, f'{tv}%', color=c)
+    ax.set_xlim(0, 60); ax.set_ylim(-0.05, 0.47)
+    ax.set_xlabel('Threshold probability (%)', fontsize=12); ax.set_ylabel('Net benefit', fontsize=12)
+    ax.set_title(title, fontweight='bold', fontsize=13); ax.legend(loc='upper right')
+fig.tight_layout(); save_fig(fig, "ManuscriptFig6_DCA")
 
 # Fig12: Confusion matrices
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 for ax, (ds, y_true, label) in zip(axes, [
-    ('test', y_test, "Internal test set"), ('ext', y_ext, "External validation")
+    ('test', y_test, "Internal test set"), ('ext', y_ext, "Temporal validation")
 ]):
     yp = prob_store[ds][best_name]
     cm = confusion_matrix(y_true, (yp >= 0.5).astype(int))
@@ -948,7 +1050,7 @@ fig.tight_layout(); save_fig(fig, "Fig12_confusion_matrix")
 # Fig13: Predicted probability distributions
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 for ax, (ds, y_true, label) in zip(axes, [
-    ('test', y_test, "Internal test set"), ('ext', y_ext, "External validation")
+    ('test', y_test, "Internal test set"), ('ext', y_ext, "Temporal validation")
 ]):
     yp = prob_store[ds][best_name]
     ax.hist(yp[y_true==0], bins=30, alpha=0.6, color='#5B9BD5', label='pN-', density=True)

@@ -9,6 +9,6 @@ authors:
     given-names: Hiroshi
 repository-code: https://github.com/GoshiFujimoto/gastric-cancer-lnm-prediction
 doi: 10.5281/zenodo.20376901
-version: v1.0.0
-date-released: "2025-05-25"
+version: v1.1.0
+date-released: "2026-10-29"
 license: MIT

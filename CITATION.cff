@@ -8,7 +8,7 @@ authors:
   - family-names: Kusanagi
     given-names: Hiroshi
 repository-code: https://github.com/GoshiFujimoto/gastric-cancer-lnm-prediction
-doi: 10.5281/zenodo.20376901
+doi: 10.5281/zenodo.23757162
 version: v1.1.0
 date-released: "2026-10-29"
 license: MIT

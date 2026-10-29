@@ -1,7 +1,7 @@
 # gastric-cancer-lnm-prediction
 ML-based lymph node metastasis prediction in older gastric cancer patients (TRIPOD+AI)
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20376901.svg)](https://doi.org/10.5281/zenodo.20376901)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23757162.svg)](https://doi.org/10.5281/zenodo.23757162)
 
 Analysis code for:
 Fujimoto G, Kusanagi H. Machine learning-based prediction of lymph node metastasis for individualized surgical decision-making in older patients with gastric cancer: a retrospective simulation study compliant with TRIPOD+AI. *Ann Surg Oncol* (under revision).
